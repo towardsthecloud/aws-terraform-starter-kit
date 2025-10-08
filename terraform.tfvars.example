@@ -1,0 +1,20 @@
+# AWS region for resources
+aws_region = "us-east-1"
+
+# Environment name (e.g., dev, staging, prod)
+environment = "dev"
+
+# Name of the project
+project_name = "aws-terraform-starter"
+
+# S3 bucket name (leave empty for auto-generated name)
+bucket_name = ""
+
+# Common tags to apply to all resources
+tags = {
+  Terraform   = "true"
+  Environment = "dev"
+  Project     = "aws-terraform-starter"
+  Owner       = "your-name"
+  Department  = "engineering"
+}
