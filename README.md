@@ -1,4 +1,4 @@
-# [![AWS Terraform Starter Kit header](./icons/github-title-banner.png)](https://towardsthecloud.com)
+# [![AWS Terraform Starter Kit header](./images/github-title-banner.png)](https://towardsthecloud.com)
 
 # AWS Terraform Starter Kit
 
