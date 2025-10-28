@@ -1,0 +1,57 @@
+name: Terraform Plan Comment
+
+on:
+  workflow_call:
+    inputs:
+      planfile:
+        description: "Path to the Terraform plan file"
+        type: string
+        required: true
+      working-directory:
+        description: "Terraform working directory"
+        type: string
+        required: true
+      environment:
+        description: "Environment name (e.g., production, staging)"
+        type: string
+      aws-region:
+        description: "AWS Region where resources will be deployed"
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  comment-terraform-plan:
+    name: Post Terraform Plan as PR Comment
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: terraform-plan-artifact
+          path: ${{ inputs.working-directory }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        run: terraform init -backend=false
+        working-directory: ${{ inputs.working-directory }}
+
+      - name: Post Terraform Plan Comment in PR
+        uses: towardsthecloud/terraform-plan-pr-commenter@v1
+        with:
+          planfile: ${{ inputs.planfile }}
+          working-directory: ${{ inputs.working-directory }}
+          aws-region: ${{ inputs.aws-region }}
+          header: |
+            ## Terraform Plan for ${{ inputs.environment }} in ${{ inputs.aws-region }}

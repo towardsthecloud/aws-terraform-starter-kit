@@ -1,0 +1,2 @@
+# This file ensures the environments directory is tracked by git
+# Environment-specific configurations will be created by the provision-repo.sh script

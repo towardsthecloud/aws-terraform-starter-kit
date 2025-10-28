@@ -1,0 +1,45 @@
+name: Checkov Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: 'Directory to scan'
+        required: false
+        type: string
+        default: '.'
+      soft_fail:
+        description: 'Whether to fail the workflow on security issues'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  checkov:
+    name: Run Checkov
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: ${{ inputs.working_directory || '.' }}
+          framework: terraform
+          output_format: cli
+          soft_fail: ${{ inputs.soft_fail }}
+          download_external_modules: true
+          config_file: .checkov.yml
+
+      - name: Checkov Summary
+        if: always()
+        run: |
+          echo "### Checkov Security Scan Results :shield:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Security scan completed. Check the logs above for detailed results." >> $GITHUB_STEP_SUMMARY

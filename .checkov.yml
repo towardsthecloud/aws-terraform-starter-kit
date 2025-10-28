@@ -1,0 +1,44 @@
+---
+# Checkov configuration file
+# https://www.checkov.io/2.Basics/CLI%20Command%20Reference.html
+
+# Framework to scan (terraform, cloudformation, kubernetes, etc.)
+framework: terraform
+
+# Minimum severity level to report (CRITICAL, HIGH, MEDIUM, LOW)
+# Note: Checkov doesn't have a direct severity filter, but you can use check IDs
+# compact: true
+
+# Skip specific checks (add check IDs as needed)
+skip-check:
+  # Example: Skip S3 bucket logging checks for demo buckets
+  # - CKV_AWS_18  # S3 Bucket should have access logging enabled
+  # - CKV_AWS_21  # S3 Bucket should have versioning enabled
+
+# Run specific checks only (comment out to run all checks)
+# check:
+#   - CKV_AWS_*
+
+# Exclude specific directories
+skip-path:
+  - .terraform/
+  - .git/
+  - tests/
+
+# Enable downloading external modules
+download-external-modules: true
+
+# Quiet mode (only show failed checks)
+# quiet: true
+
+# Compact output
+# compact: true
+
+# Output format (cli, json, sarif, etc.)
+# output: cli
+
+# Show successful checks
+# output-passed: false
+
+# Show skipped checks
+# output-skip: false
