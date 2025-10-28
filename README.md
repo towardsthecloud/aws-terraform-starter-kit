@@ -1,3 +1,5 @@
+# [![AWS Terraform Starter Kit header](./icons/github-title-banner.png)](https://towardsthecloud.com)
+
 # AWS Terraform Starter Kit
 
 [![AWS](https://img.shields.io/badge/AWS-%23FF9900.svg?style=flat&logo=amazon-aws&logoColor=white)](https://aws.amazon.com/)
