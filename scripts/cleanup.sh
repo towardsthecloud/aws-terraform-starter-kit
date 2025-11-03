@@ -146,9 +146,9 @@ destroy_all_environments() {
     done
 }
 
-# Function to destroy bootstrap resources (S3 bucket and DynamoDB table)
+# Function to destroy bootstrap resources (S3 bucket with native locking)
 destroy_bootstrap_resources() {
-    warning "This will destroy the Terraform state backend (S3 bucket and DynamoDB table)!"
+    warning "This will destroy the Terraform state backend (S3 bucket with .tflock files)!"
     warning "Make sure all environments are destroyed first, or you'll lose state!"
     echo ""
 
@@ -165,7 +165,6 @@ destroy_bootstrap_resources() {
 
     info "Backend resources to delete:"
     echo "  S3 Bucket: ${TF_STATE_BUCKET}"
-    echo "  DynamoDB Table: ${TF_STATE_LOCK_TABLE}"
     echo "  Region: ${AWS_REGION}"
     echo ""
 
@@ -227,20 +226,6 @@ destroy_bootstrap_resources() {
         fi
     else
         warning "S3 bucket not found: $TF_STATE_BUCKET"
-    fi
-
-    # Delete DynamoDB table
-    if aws dynamodb describe-table --table-name "$TF_STATE_LOCK_TABLE" --region "$AWS_REGION" &>/dev/null; then
-        info "Deleting DynamoDB table: $TF_STATE_LOCK_TABLE"
-        if aws dynamodb delete-table --table-name "$TF_STATE_LOCK_TABLE" --region "$AWS_REGION" > /dev/null; then
-            info "Waiting for DynamoDB table deletion..."
-            aws dynamodb wait table-not-exists --table-name "$TF_STATE_LOCK_TABLE" --region "$AWS_REGION"
-            success "DynamoDB table deleted: $TF_STATE_LOCK_TABLE"
-        else
-            error "Failed to delete DynamoDB table"
-        fi
-    else
-        warning "DynamoDB table not found: $TF_STATE_LOCK_TABLE"
     fi
 
     # Remove backend configuration file
@@ -393,7 +378,7 @@ main() {
     info "Select cleanup option:"
     echo ""
     echo "  1. Destroy all environment resources (OIDC providers, IAM roles, etc.)"
-    echo "  2. Destroy bootstrap resources (S3 bucket + DynamoDB table)"
+    echo "  2. Destroy bootstrap resources (S3 bucket with state and lock files)"
     echo "  3. Clean local files only (cached Terraform files)"
     echo "  4. Remove source files (environment directories + workflow files)"
     echo "  5. Full cleanup (resources + bootstrap + local + source files)"

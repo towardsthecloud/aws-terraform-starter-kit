@@ -12,7 +12,7 @@ A production-ready AWS Terraform starter kit featuring secure OIDC authenticatio
 ## 🚀 Features
 
 - **⚡ One-Command Bootstrap**: Single command automatically sets up your entire infrastructure pipeline
-  - Creates S3 + DynamoDB for Terraform state management
+  - Creates S3 bucket with native state locking (Terraform 1.10+)
   - Generates environment-specific Terraform configurations
   - Provisions OIDC provider for secure keyless authentication
   - Auto-generates GitHub Actions workflows for CI/CD
@@ -75,7 +75,7 @@ make setup
 
 **What happens:**
 1. ✅ Verifies prerequisites e.g. dev tools
-2. ✅ Creates S3 backend + DynamoDB table to manage Terraform state
+2. ✅ Creates S3 backend with native state locking (no DynamoDB needed)
 3. ✅ Provisions environment (test/staging/production)
 4. ✅ Deploys OIDC provider + IAM role so you can deploy securely via GitHub
 5. ✅ Generates GitHub workflow files
@@ -103,7 +103,6 @@ All values are embedded as defaults - only set if you want to override:
 - `AWS_ACCOUNT_ID` (already hardcoded)
 - `AWS_REGION`
 - `TF_STATE_BUCKET`
-- `TF_STATE_LOCK_TABLE`
 
 #### B. Environment Protection (Production)
 
