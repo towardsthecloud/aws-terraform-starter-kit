@@ -19,6 +19,10 @@ A production-ready AWS Terraform starter kit featuring secure OIDC authenticatio
 - **💬 PR Plan Comments**: [Terraform plan outputs](https://github.com/marketplace/actions/terraform-plan-pr-commenter) are automatically posted to your pull requests for easy infrastructure change reviews
 - **🛡️ Built-in Security**: TFLint and Checkov are integrated in the pipeline to catch issues before you deploy to AWS
 
+<!-- TIP-LIST:START -->
+
+<!-- TIP-LIST:END -->
+
 ## 📋 Prerequisites
 
 - AWS account with admin access
