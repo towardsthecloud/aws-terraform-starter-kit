@@ -20,7 +20,32 @@ A production-ready AWS Terraform starter kit featuring secure OIDC authenticatio
 - **🛡️ Built-in Security**: TFLint and Checkov are integrated in the pipeline to catch issues before you deploy to AWS
 
 <!-- TIP-LIST:START -->
-
+> [!TIP]
+> **Stop AWS bill surprises from happening.**
+>
+> Most infrastructure changes look harmless until you see next month's AWS bill. [CloudBurn](https://cloudburn.io) prevents this by analyzing the cost impact of your Terraform changes directly in GitHub pull requests, catching expensive mistakes during code review when fixes are quick, not weeks later when they're costly and risky.
+>
+> <a href="https://github.com/apps/cloudburn-io"><img alt="Install CloudBurn from GitHub Marketplace" src="https://img.shields.io/badge/Install%20CloudBurn-GitHub%20Marketplace-brightgreen.svg?style=for-the-badge&logo=github"/></a>
+>
+> <details>
+> <summary>💰 <strong>Set it up once, then never be surprised by AWS costs again</strong></summary>
+> <br/>
+>
+> 1. **First install the free [Terraform Plan PR Commenter GitHub Action](https://github.com/marketplace/actions/terraform-plan-pr-commenter)** in your repository where you build your AWS Terraform infrastructure
+> 2. **Then install the [CloudBurn GitHub App](https://github.com/apps/cloudburn-io)** on the same repository
+>
+> **What happens now:**
+>
+> Whenever you open a PR with infrastructure changes, the GitHub Action comments with your Terraform plan analysis. CloudBurn reads that plan and automatically adds a separate comment with a detailed cost report showing:
+> - **Monthly cost impact** – Will this change increase or decrease your AWS bill? By how much?
+> - **Per-resource breakdown** – See exactly which resources are driving costs (old vs. new monthly costs)
+> - **Region-aware pricing** – We pick the right AWS pricing based on the region where your infrastructure is deployed
+>
+> Your team can now validate cost impact alongside infrastructure changes during code review. Essentially, this shifts FinOps left where you optimize costs as you code, not weeks later when context is lost and production adjustments require more time and carry added risk.
+>
+> CloudBurn will be free during beta. After launch, a free Community plan (1 repository with unlimited users) will always be available.
+>
+> </details>
 <!-- TIP-LIST:END -->
 
 ## 📋 Prerequisites
