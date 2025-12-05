@@ -25,14 +25,14 @@ A production-ready AWS Terraform starter kit featuring secure OIDC authenticatio
 >
 > Most infrastructure changes look harmless until you see next month's AWS bill. [CloudBurn](https://cloudburn.io) prevents this by analyzing the cost impact of your Terraform changes directly in GitHub pull requests, catching expensive mistakes during code review when fixes are quick, not weeks later when they're costly and risky.
 >
-> <a href="https://github.com/apps/cloudburn-io"><img alt="Install CloudBurn from GitHub Marketplace" src="https://img.shields.io/badge/Install%20CloudBurn-GitHub%20Marketplace-brightgreen.svg?style=for-the-badge&logo=github"/></a>
+> <a href="https://github.com/marketplace/cloudburn-io"><img alt="Install CloudBurn from GitHub Marketplace" src="https://img.shields.io/badge/Install%20CloudBurn-GitHub%20Marketplace-brightgreen.svg?style=for-the-badge&logo=github"/></a>
 >
 > <details>
 > <summary>💰 <strong>Set it up once, then never be surprised by AWS costs again</strong></summary>
 > <br/>
 >
 > 1. **First install the free [Terraform Plan PR Commenter GitHub Action](https://github.com/marketplace/actions/terraform-plan-pr-commenter)** in your repository where you build your AWS Terraform infrastructure
-> 2. **Then install the [CloudBurn GitHub App](https://github.com/apps/cloudburn-io)** on the same repository
+> 2. **Then install the [CloudBurn GitHub App](https://github.com/marketplace/cloudburn-io)** on the same repository
 >
 > **What happens now:**
 >
