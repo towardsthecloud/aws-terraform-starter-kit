@@ -47,7 +47,7 @@ cat << "EOF"
 ║                                                            ║
 ║     Terraform AWS Starter Kit - Unified Setup             ║
 ║                                                            ║
-║     Bootstrap → Provision → Deploy OIDC                   ║
+║     Bootstrap → Provision → Deploy Stacks                 ║
 ║                                                            ║
 ╚═══════════════════════════════════════════════════════════╝
 EOF
@@ -59,14 +59,14 @@ usage() {
 Usage: $0 [OPTIONS]
 
 Complete setup wizard for Terraform AWS Starter Kit.
-Bootstraps backend, provisions environments, and deploys OIDC.
+Bootstraps backend, provisions stacks, and deploys bootstrap + environments.
 
 OPTIONS:
     -e, --environments ENV1,ENV2  Comma-separated list of environments (test,staging,production)
     -p, --profile PROFILE         AWS profile to use (granted/assume profile name)
     -a, --auto-approve            Skip all interactive confirmations
     -s, --skip-bootstrap          Skip bootstrap step (use existing backend)
-    -d, --skip-deploy             Skip OIDC deployment (only create files)
+    -d, --skip-deploy             Skip Terraform deployment (only create files)
     -h, --help                    Display this help message
 
 EXAMPLES:
@@ -131,6 +131,53 @@ done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+ENV_CONFIG_FILE="$REPO_ROOT/config/environments.json"
+DEFAULT_ROLE_NAME="GitHubActionsServiceRole-Terraform"
+
+ensure_environment_config_file() {
+    mkdir -p "$REPO_ROOT/config"
+
+    if [[ ! -f "$ENV_CONFIG_FILE" ]]; then
+        cat > "$ENV_CONFIG_FILE" << 'EOF'
+{
+  "environments": {}
+}
+EOF
+        success "Created environment mapping file: $ENV_CONFIG_FILE"
+    fi
+}
+
+get_environment_config_value() {
+    local env_name=$1
+    local key=$2
+
+    jq -r --arg env "$env_name" --arg key "$key" \
+        '.environments[$env][$key] // empty' "$ENV_CONFIG_FILE"
+}
+
+upsert_environment_config() {
+    local env_name=$1
+    local account_id=$2
+    local region=$3
+    local state_bucket=$4
+    local role_name=$5
+    local tmp_file
+
+    tmp_file=$(mktemp)
+    jq --arg env "$env_name" \
+       --arg account_id "$account_id" \
+       --arg region "$region" \
+       --arg state_bucket "$state_bucket" \
+       --arg role_name "$role_name" \
+       '.environments[$env] = {
+          account_id: $account_id,
+          region: $region,
+          state_bucket: $state_bucket,
+          role_name: $role_name
+        }' "$ENV_CONFIG_FILE" > "$tmp_file"
+    mv "$tmp_file" "$ENV_CONFIG_FILE"
+}
+
 #######################################
 # Step 1: Prerequisites Check
 #######################################
@@ -156,6 +203,12 @@ if ! command -v git &> /dev/null; then
     error "Git is not installed. Please install Git."
 fi
 success "Git found: $(git --version)"
+
+# Check jq installation
+if ! command -v jq &> /dev/null; then
+    error "jq is not installed. Please install jq to manage environment/account mappings."
+fi
+success "jq found: $(jq --version)"
 
 # Unset AWS_PROFILE if it's empty
 if [[ -z "${AWS_PROFILE:-}" ]]; then
@@ -495,15 +548,150 @@ if [[ -z "$DETECTED_REGION" ]]; then
     DETECTED_REGION=$(aws configure get region 2>/dev/null || echo "us-east-1")
 fi
 
+ensure_environment_config_file
+info "Using environment mapping file: $ENV_CONFIG_FILE"
+
+# Create account-level bootstrap stack for shared identity resources
+provision_bootstrap_identity_stack() {
+    local BOOTSTRAP_DIR="$REPO_ROOT/bootstrap/account"
+
+    info "Creating account bootstrap stack: $BOOTSTRAP_DIR"
+    mkdir -p "$BOOTSTRAP_DIR"
+
+    cat > "$BOOTSTRAP_DIR/backend.tf" << EOF
+terraform {
+  required_version = ">= 1.10"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+
+  backend "s3" {
+    bucket       = "${TF_STATE_BUCKET}"
+    key          = "bootstrap/account/terraform.tfstate"
+    region       = "${AWS_REGION}"
+    encrypt      = true
+    use_lockfile = true
+  }
+}
+EOF
+
+    cat > "$BOOTSTRAP_DIR/main.tf" << EOF
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      ManagedBy  = "terraform"
+      Repository = var.github_repo
+      Scope      = "account-bootstrap"
+    }
+  }
+}
+
+resource "aws_iam_openid_connect_provider" "github_actions" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = var.audience_list
+  thumbprint_list = [var.github_thumbprint]
+
+  tags = {
+    Name       = "GitHubActionsOIDCProvider"
+    Repository = var.github_repo
+  }
+}
+EOF
+
+    cat > "$BOOTSTRAP_DIR/variables.tf" << EOF
+variable "aws_region" {
+  description = "AWS region for provider operations"
+  type        = string
+  default     = "${DETECTED_REGION}"
+}
+
+variable "github_repo" {
+  description = "GitHub repository name (format: owner/repo)"
+  type        = string
+  default     = "${GITHUB_REPO}"
+}
+
+variable "github_thumbprint" {
+  description = "GitHub OIDC thumbprint"
+  type        = string
+  default     = "6938fd4d98bab03faadb97b34396831e3780aea1"
+}
+
+variable "audience_list" {
+  description = "List of allowed audiences for the OIDC provider"
+  type        = list(string)
+  default     = ["sts.amazonaws.com"]
+}
+EOF
+
+    cat > "$BOOTSTRAP_DIR/outputs.tf" << EOF
+output "oidc_provider_arn" {
+  description = "ARN of the GitHub OIDC provider"
+  value       = aws_iam_openid_connect_provider.github_actions.arn
+}
+EOF
+
+    cat > "$BOOTSTRAP_DIR/terraform.tfvars" << EOF
+aws_region  = "${DETECTED_REGION}"
+github_repo = "${GITHUB_REPO}"
+EOF
+
+    success "Created account bootstrap stack files"
+}
+
+# Resolve account/region/state mapping for an environment and enforce account guardrails
+resolve_environment_mapping() {
+    local ENVIRONMENT=$1
+    local ENV_ACCOUNT_ID
+    local ENV_REGION
+    local ENV_STATE_BUCKET
+    local ENV_ROLE_NAME
+
+    ENV_ACCOUNT_ID=$(get_environment_config_value "$ENVIRONMENT" "account_id")
+    ENV_REGION=$(get_environment_config_value "$ENVIRONMENT" "region")
+    ENV_STATE_BUCKET=$(get_environment_config_value "$ENVIRONMENT" "state_bucket")
+    ENV_ROLE_NAME=$(get_environment_config_value "$ENVIRONMENT" "role_name")
+
+    if [[ -z "$ENV_ACCOUNT_ID" || -z "$ENV_REGION" || -z "$ENV_STATE_BUCKET" || -z "$ENV_ROLE_NAME" ]]; then
+        ENV_ACCOUNT_ID="$ACCOUNT_ID"
+        ENV_REGION="$DETECTED_REGION"
+        ENV_STATE_BUCKET="$TF_STATE_BUCKET"
+        ENV_ROLE_NAME="$DEFAULT_ROLE_NAME"
+
+        upsert_environment_config "$ENVIRONMENT" "$ENV_ACCOUNT_ID" "$ENV_REGION" "$ENV_STATE_BUCKET" "$ENV_ROLE_NAME"
+    fi
+
+    if [[ "$ENV_ACCOUNT_ID" != "$ACCOUNT_ID" ]]; then
+        error "Environment '$ENVIRONMENT' is mapped to account '$ENV_ACCOUNT_ID' but current AWS account is '$ACCOUNT_ID'. Switch credentials or update $ENV_CONFIG_FILE."
+    fi
+
+    echo "$ENV_ACCOUNT_ID|$ENV_REGION|$ENV_STATE_BUCKET|$ENV_ROLE_NAME"
+}
+
 # Function to provision a single environment
 provision_environment() {
     local ENVIRONMENT=$1
-    local USE_EXISTING_OIDC=$2  # Pass whether to use existing OIDC provider
+    local ENV_MAPPING
+    local ENV_ACCOUNT_ID
+    local ENV_REGION
+    local ENV_STATE_BUCKET
+    local ENV_ROLE_NAME
 
     echo ""
     info "========================================="
     info "Provisioning environment: $ENVIRONMENT"
     info "========================================="
+
+    ENV_MAPPING=$(resolve_environment_mapping "$ENVIRONMENT")
+    IFS='|' read -r ENV_ACCOUNT_ID ENV_REGION ENV_STATE_BUCKET ENV_ROLE_NAME <<< "$ENV_MAPPING"
+
+    info "Mapping for '$ENVIRONMENT': account=$ENV_ACCOUNT_ID region=$ENV_REGION state_bucket=$ENV_STATE_BUCKET role=$ENV_ROLE_NAME"
 
     # Create environment directory structure
     ENV_DIR="$REPO_ROOT/environments/$ENVIRONMENT"
@@ -524,9 +712,9 @@ terraform {
   }
 
   backend "s3" {
-    bucket       = "${TF_STATE_BUCKET}"
+    bucket       = "${ENV_STATE_BUCKET}"
     key          = "environments/${ENVIRONMENT}/terraform.tfstate"
-    region       = "${AWS_REGION}"
+    region       = "${ENV_REGION}"
     encrypt      = true
     use_lockfile = true
   }
@@ -540,12 +728,11 @@ EOF
 # GitHub repository for OIDC provider
 github_repo = "$GITHUB_REPO"
 
-# Set to true if the OIDC provider already exists in your AWS account
-# This prevents creating duplicate OIDC providers
-use_existing_oidc_provider = $USE_EXISTING_OIDC
+# OIDC provider is managed in bootstrap/account and consumed by environment stacks
+use_existing_oidc_provider = true
 
 # IAM role name for GitHub Actions
-role_name = "GitHubActionsServiceRole-Terraform"
+role_name = "${ENV_ROLE_NAME}"
 
 # Managed policy ARNs to attach to the role
 # WARNING: AdministratorAccess is used for demo purposes only
@@ -596,7 +783,7 @@ EOF
 variable "aws_region" {
   description = "AWS region for resources"
   type        = string
-  default     = "${DETECTED_REGION}"
+  default     = "${ENV_REGION}"
 }
 
 variable "use_existing_oidc_provider" {
@@ -614,7 +801,7 @@ variable "github_repo" {
 variable "role_name" {
   description = "Name of the IAM role for GitHub Actions"
   type        = string
-  default     = "GitHubActionsServiceRole-Terraform"
+  default     = "${ENV_ROLE_NAME}"
 }
 
 variable "managed_policy_arns" {
@@ -677,12 +864,12 @@ permissions:
   pull-requests: write
 
 env:
-  AWS_ACCOUNT_ID: \${{ vars.AWS_ACCOUNT_ID || '${ACCOUNT_ID}' }}
-  AWS_REGION: \${{ vars.AWS_REGION || '${DETECTED_REGION}' }}
-  GITHUB_ACTIONS_ROLE_NAME: \${{ vars.GITHUB_ACTIONS_ROLE_NAME || 'GitHubActionsServiceRole-Terraform' }}
+  EXPECTED_AWS_ACCOUNT_ID: '${ENV_ACCOUNT_ID}'
+  AWS_REGION: '${ENV_REGION}'
+  GITHUB_ACTIONS_ROLE_NAME: '${ENV_ROLE_NAME}'
   ENVIRONMENT: ${ENVIRONMENT}
   TF_WORKING_DIR: environments/${ENVIRONMENT}
-  TF_STATE_BUCKET: \${{ vars.TF_STATE_BUCKET || '${TF_STATE_BUCKET}' }}
+  TF_STATE_BUCKET: '${ENV_STATE_BUCKET}'
 
 jobs:
   tflint:
@@ -694,7 +881,7 @@ jobs:
     uses: ./.github/workflows/checkov-scan.yml
     with:
       working_directory: 'environments/${ENVIRONMENT}'
-      soft_fail: true
+      soft_fail: false
 
   terraform-check:
     name: Terraform Check
@@ -742,9 +929,17 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::\${{ env.AWS_ACCOUNT_ID }}:role/\${{ env.GITHUB_ACTIONS_ROLE_NAME }}
+          role-to-assume: arn:aws:iam::\${{ env.EXPECTED_AWS_ACCOUNT_ID }}:role/\${{ env.GITHUB_ACTIONS_ROLE_NAME }}
           aws-region: \${{ env.AWS_REGION }}
           role-session-name: GitHubActions-Terraform-Plan-${ENV_CAPITALIZED}
+
+      - name: Validate assumed account mapping
+        run: |
+          ACTUAL_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          if [[ "$ACTUAL_ACCOUNT_ID" != "${ENV_ACCOUNT_ID}" ]]; then
+            echo "Expected account ${ENV_ACCOUNT_ID}, but assumed $ACTUAL_ACCOUNT_ID."
+            exit 1
+          fi
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -776,7 +971,7 @@ jobs:
     with:
       planfile: tfplan.binary
       working-directory: 'environments/${ENVIRONMENT}'
-      aws-region: ${DETECTED_REGION}
+      aws-region: ${ENV_REGION}
       environment: ${ENVIRONMENT}
 
   terraform-apply:
@@ -797,9 +992,17 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::\${{ env.AWS_ACCOUNT_ID }}:role/\${{ env.GITHUB_ACTIONS_ROLE_NAME }}
+          role-to-assume: arn:aws:iam::\${{ env.EXPECTED_AWS_ACCOUNT_ID }}:role/\${{ env.GITHUB_ACTIONS_ROLE_NAME }}
           aws-region: \${{ env.AWS_REGION }}
           role-session-name: GitHubActions-Terraform-Apply-${ENV_CAPITALIZED}
+
+      - name: Validate assumed account mapping
+        run: |
+          ACTUAL_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          if [[ "$ACTUAL_ACCOUNT_ID" != "${ENV_ACCOUNT_ID}" ]]; then
+            echo "Expected account ${ENV_ACCOUNT_ID}, but assumed $ACTUAL_ACCOUNT_ID."
+            exit 1
+          fi
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -837,152 +1040,153 @@ EOF
     success "Environment $ENVIRONMENT provisioned successfully!"
 }
 
-# Check if OIDC provider exists before provisioning
-info "Checking if GitHub OIDC provider exists in account $ACCOUNT_ID..."
-OIDC_PROVIDER_URL="https://token.actions.githubusercontent.com"
-EXISTING_PROVIDER=$(aws iam list-open-id-connect-providers --output json 2>/dev/null | grep -o "arn:aws:iam::[0-9]*:oidc-provider/token.actions.githubusercontent.com" || true)
-
-if [[ -n "$EXISTING_PROVIDER" ]]; then
-    success "Found existing OIDC provider: $EXISTING_PROVIDER"
-    info "This provider will be used by the environment(s)"
-    OIDC_EXISTS=true
-else
-    info "No existing OIDC provider found"
-    info "The first environment will create a new OIDC provider"
-    OIDC_EXISTS=false
-fi
+provision_bootstrap_identity_stack
 
 # Provision each environment
-FIRST_ENV=true
 for ENV in "${ENVIRONMENTS[@]}"; do
-    # Logic for OIDC provider management:
-    # - If OIDC already exists (manually created or from another setup): use it (don't manage it)
-    # - If no OIDC exists and this is first environment: create and manage it
-    # - If OIDC will be created by first env: subsequent envs use it
-
-    if [[ "$OIDC_EXISTS" == true ]]; then
-        USE_EXISTING="true"
-        info "Environment '$ENV' will use existing OIDC provider (not managed by Terraform)"
-    elif [[ "$FIRST_ENV" == true ]]; then
-        USE_EXISTING="false"
-        info "Environment '$ENV' will create and manage the OIDC provider"
-        OIDC_EXISTS=true  # Mark as will exist after first env
-    else
-        USE_EXISTING="true"
-        info "Environment '$ENV' will use OIDC provider created by first environment"
-    fi
-
-    provision_environment "$ENV" "$USE_EXISTING"
-    FIRST_ENV=false
+    provision_environment "$ENV"
 done
 
 #######################################
-# Step 4: OIDC Deployment
+# Step 4: Deploy Bootstrap + Environments
 #######################################
-section "Step 4/4: OIDC Deployment"
+section "Step 4/4: Deploy Bootstrap + Environments"
 
 if [[ "$SKIP_DEPLOY" == true ]]; then
-    warning "Skipping OIDC deployment (files created only)"
+    warning "Skipping deployment (files created only)"
 else
-    # Deploy OIDC for each environment
-    FIRST_OIDC=true
+    BOOTSTRAP_DIR="$REPO_ROOT/bootstrap/account"
+    for ENV in "${ENVIRONMENTS[@]}"; do
+        resolve_environment_mapping "$ENV" > /dev/null
+    done
+
+    echo ""
+    info "========================================="
+    info "Deploying bootstrap stack: account"
+    info "========================================="
+
+    cd "$BOOTSTRAP_DIR"
+
+    info "Initializing Terraform..."
+    terraform init
+    success "Terraform initialized"
+
+    info "Validating Terraform configuration..."
+    terraform validate
+    success "Configuration is valid"
+
+    info "Creating deployment plan..."
+    BOOTSTRAP_PLAN_OUTPUT=$(terraform plan -out=tfplan -var-file=terraform.tfvars 2>&1 || true)
+
+    if echo "$BOOTSTRAP_PLAN_OUTPUT" | grep -q "No changes"; then
+        success "No changes detected for bootstrap/account."
+        rm -f tfplan
+    else
+        echo "$BOOTSTRAP_PLAN_OUTPUT"
+
+        if [[ "$AUTO_APPROVE" == false ]]; then
+            echo ""
+            warning "Review the bootstrap plan above carefully."
+            read -r -p "Apply bootstrap/account changes? [y/N] " CONFIRM
+
+            if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+                info "Bootstrap deployment cancelled."
+                rm -f tfplan
+                exit 0
+            fi
+        fi
+
+        info "Applying Terraform changes for bootstrap/account..."
+        if terraform apply -auto-approve tfplan; then
+            success "Bootstrap stack deployed successfully!"
+
+            info "Verifying bootstrap state was saved to S3..."
+            sleep 2
+
+            if aws s3api head-object \
+                --bucket "$TF_STATE_BUCKET" \
+                --key "bootstrap/account/terraform.tfstate" \
+                --region "$AWS_REGION" &>/dev/null; then
+                success "Bootstrap state file confirmed in S3"
+            else
+                error "Bootstrap state file not found in S3!"
+            fi
+        else
+            error "Terraform apply failed for bootstrap/account!"
+        fi
+
+        rm -f tfplan
+    fi
 
     for ENV in "${ENVIRONMENTS[@]}"; do
         echo ""
         info "========================================="
-        info "Deploying OIDC for environment: $ENV"
+        info "Deploying environment stack: $ENV"
         info "========================================="
+
+        ENV_MAPPING=$(resolve_environment_mapping "$ENV")
+        IFS='|' read -r ENV_ACCOUNT_ID ENV_REGION ENV_STATE_BUCKET ENV_ROLE_NAME <<< "$ENV_MAPPING"
 
         ENV_DIR="$REPO_ROOT/environments/$ENV"
         cd "$ENV_DIR"
 
-        # Terraform Init
         info "Initializing Terraform..."
         terraform init
         success "Terraform initialized"
 
-        # Terraform Validate
         info "Validating Terraform configuration..."
         terraform validate
         success "Configuration is valid"
 
-        # Check if OIDC provider already exists (only need to create once)
-        if [[ "$FIRST_OIDC" == true ]]; then
-            info "Checking for existing GitHub OIDC provider..."
-            OIDC_PROVIDER_URL="https://token.actions.githubusercontent.com"
-            EXISTING_PROVIDER=$(aws iam list-open-id-connect-providers --output json | grep -o "arn:aws:iam::[0-9]*:oidc-provider/token.actions.githubusercontent.com" || true)
-
-            if [[ -n "$EXISTING_PROVIDER" ]]; then
-                success "Found existing OIDC provider: $EXISTING_PROVIDER"
-            else
-                info "No existing OIDC provider found, will create new one"
-            fi
-        fi
-
-        # Terraform Plan
         info "Creating deployment plan..."
         PLAN_OUTPUT=$(terraform plan -out=tfplan -var-file=terraform.tfvars 2>&1 || true)
 
         if echo "$PLAN_OUTPUT" | grep -q "No changes"; then
             success "No changes detected for $ENV. Infrastructure is up to date."
             rm -f tfplan
-        else
-            echo "$PLAN_OUTPUT"
-
-            # Interactive approval (unless auto-approve is set)
-            if [[ "$AUTO_APPROVE" == false ]]; then
-                echo ""
-                warning "Review the plan above carefully."
-                read -r -p "Do you want to apply these changes for $ENV? [y/N] " CONFIRM
-
-                if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-                    info "Deployment cancelled for $ENV."
-                    rm -f tfplan
-                    continue
-                fi
-            fi
-
-            # Terraform Apply
-            info "Applying Terraform changes for $ENV..."
-            if terraform apply -auto-approve tfplan; then
-                success "OIDC deployed successfully for $ENV!"
-
-                # Verify state was saved to S3
-                info "Verifying state was saved to S3..."
-                sleep 2  # Give S3 a moment to process the write
-
-                if aws s3api head-object \
-                    --bucket "$TF_STATE_BUCKET" \
-                    --key "environments/$ENV/terraform.tfstate" \
-                    --region "$AWS_REGION" &>/dev/null; then
-                    success "State file confirmed in S3"
-
-                    # Verify state contains expected resources
-                    RESOURCE_COUNT=$(terraform state list | wc -l | tr -d ' ')
-                    info "State contains $RESOURCE_COUNT resources"
-
-                    if [[ $RESOURCE_COUNT -eq 0 ]]; then
-                        error "State file is empty! Resources were created but state was not saved properly."
-                    fi
-                else
-                    error "State file not found in S3! Apply may have failed to save state."
-                fi
-
-                # Display outputs
-                echo ""
-                info "Terraform Outputs for $ENV:"
-                echo -e "${GREEN}"
-                terraform output
-                echo -e "${NC}"
-            else
-                error "Terraform apply failed for $ENV!"
-            fi
-
-            # Cleanup plan file
-            rm -f tfplan
+            continue
         fi
 
-        FIRST_OIDC=false
+        echo "$PLAN_OUTPUT"
+
+        if [[ "$AUTO_APPROVE" == false ]]; then
+            echo ""
+            warning "Review the plan above carefully."
+            read -r -p "Do you want to apply these changes for $ENV? [y/N] " CONFIRM
+
+            if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+                info "Deployment cancelled for $ENV."
+                rm -f tfplan
+                continue
+            fi
+        fi
+
+        info "Applying Terraform changes for $ENV..."
+        if terraform apply -auto-approve tfplan; then
+            success "Environment deployed successfully for $ENV!"
+
+            info "Verifying state was saved to S3..."
+            sleep 2
+
+            if aws s3api head-object \
+                --bucket "$ENV_STATE_BUCKET" \
+                --key "environments/$ENV/terraform.tfstate" \
+                --region "$ENV_REGION" &>/dev/null; then
+                success "State file confirmed in S3"
+            else
+                error "State file not found in S3! Apply may have failed to save state."
+            fi
+
+            echo ""
+            info "Terraform Outputs for $ENV:"
+            echo -e "${GREEN}"
+            terraform output
+            echo -e "${NC}"
+        else
+            error "Terraform apply failed for $ENV!"
+        fi
+
+        rm -f tfplan
     done
 
     cd "$REPO_ROOT"
@@ -1007,50 +1211,45 @@ info "What was created:"
 echo ""
 echo "  ✅ S3 bucket: ${TF_STATE_BUCKET}"
 echo "  ✅ S3 Native State Locking (.tflock files)"
-echo "  ✅ GitHub OIDC provider in AWS"
-echo "  ✅ IAM role for GitHub Actions"
+echo "  ✅ Account bootstrap stack: bootstrap/account/"
+echo "  ✅ Shared GitHub OIDC provider in AWS (bootstrap-owned)"
+echo "  ✅ Environment mapping file: config/environments.json"
 echo ""
 
 for ENV in "${ENVIRONMENTS[@]}"; do
+    ENV_MAPPING=$(resolve_environment_mapping "$ENV")
+    IFS='|' read -r ENV_ACCOUNT_ID ENV_REGION ENV_STATE_BUCKET ENV_ROLE_NAME <<< "$ENV_MAPPING"
+
     echo "  ✅ Environment: $ENV"
     echo "     - Terraform files in environments/$ENV/"
+    echo "     - Account mapping: $ENV_ACCOUNT_ID ($ENV_REGION)"
+    echo "     - State bucket: $ENV_STATE_BUCKET"
+    echo "     - Role name: $ENV_ROLE_NAME"
     echo "     - GitHub workflow: .github/workflows/terraform-deploy-${ENV}.yml"
 done
 
 echo ""
-info "GitHub Repository Variables (optional - defaults are embedded):"
-echo ""
-echo "  AWS_ACCOUNT_ID: $ACCOUNT_ID (hardcoded in workflows)"
-echo "  AWS_REGION: ${DETECTED_REGION}"
-echo "  TF_STATE_BUCKET: ${TF_STATE_BUCKET}"
-echo "  GITHUB_ACTIONS_ROLE_NAME: GitHubActionsServiceRole-Terraform"
-echo ""
-warning "Note: These values are embedded as defaults in the workflows."
-warning "You only need to set GitHub variables if you want to override them."
-echo ""
-
 info "Next Steps:"
 echo ""
 echo "1. Review generated files:"
+echo "   - bootstrap/account/"
+echo "   - config/environments.json"
 for ENV in "${ENVIRONMENTS[@]}"; do
     echo "   - environments/${ENV}/terraform.tfvars"
 done
 echo ""
-echo "2. (Optional) Configure GitHub Environment Protection:"
+echo "2. Commit the mapping and generated Terraform files:"
+echo "   git add ."
+echo "   git commit -m 'Initial setup: Add infrastructure configuration'"
+echo "   git push origin main"
+echo ""
+echo "3. (Optional) Configure GitHub Environment Protection:"
 for ENV in "${ENVIRONMENTS[@]}"; do
     echo "   - Go to Settings → Environments → ${ENV}"
     echo "   - Add required reviewers for ${ENV} deployments"
 done
 echo ""
-echo "3. (Optional) Set GitHub repository variables (if overriding defaults):"
-echo "   - Go to Settings → Secrets and variables → Actions → Variables"
-echo ""
-echo "4. Commit and push your changes:"
-echo "   git add ."
-echo "   git commit -m 'Initial setup: Add infrastructure configuration'"
-echo "   git push origin main"
-echo ""
-echo "5. Test with a pull request to trigger the CI/CD pipeline"
+echo "4. Test with a pull request to trigger the CI/CD pipeline"
 echo ""
 
 success "Your AWS Terraform Starter Kit is ready! 🚀"

@@ -102,19 +102,11 @@ destroy_all_environments() {
     echo ""
 
     local environments=()
-    local oidc_managing_env=""
 
     for env_dir in "$REPO_ROOT"/environments/*/; do
         if [[ -d "$env_dir" ]]; then
             local env_name=$(basename "$env_dir")
             environments+=("$env_name")
-
-            # Check if this environment manages the OIDC provider
-            if [[ -f "$env_dir/terraform.tfvars" ]]; then
-                if grep -q "use_existing_oidc_provider.*=.*false" "$env_dir/terraform.tfvars" 2>/dev/null; then
-                    oidc_managing_env="$env_name"
-                fi
-            fi
         fi
     done
 
@@ -124,13 +116,6 @@ destroy_all_environments() {
     fi
 
     info "Found environments: ${environments[*]}"
-
-    if [[ -n "$oidc_managing_env" ]]; then
-        echo ""
-        warning "⚠️  OIDC Provider Info:"
-        warning "Environment '$oidc_managing_env' manages the shared OIDC provider"
-        warning "Destroying it will DELETE the OIDC provider used by all environments"
-    fi
 
     echo ""
     read -r -p "Proceed with destroying all environments? (y/N): " CONFIRM
@@ -146,9 +131,45 @@ destroy_all_environments() {
     done
 }
 
-# Function to destroy bootstrap resources (S3 bucket with native locking)
+# Function to destroy account bootstrap identity resources
+destroy_bootstrap_identity_resources() {
+    local bootstrap_dir="$REPO_ROOT/bootstrap/account"
+
+    if [[ ! -d "$bootstrap_dir" ]]; then
+        info "No bootstrap/account directory found. Skipping bootstrap identity cleanup."
+        return 0
+    fi
+
+    if [[ ! -f "$bootstrap_dir/main.tf" ]]; then
+        warning "bootstrap/account exists but no Terraform configuration found. Skipping."
+        return 0
+    fi
+
+    info "Destroying bootstrap identity resources from: bootstrap/account"
+    cd "$bootstrap_dir"
+
+    terraform init -upgrade 2>/dev/null || true
+    terraform plan -destroy
+    echo ""
+
+    read -r -p "Destroy bootstrap identity resources (OIDC provider)? (yes/N): " CONFIRM
+    CONFIRM=$(echo "$CONFIRM" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$CONFIRM" != "yes" ]]; then
+        warning "Bootstrap identity cleanup cancelled"
+        cd "$REPO_ROOT"
+        return 1
+    fi
+
+    terraform destroy -auto-approve
+    success "Bootstrap identity resources destroyed"
+    cd "$REPO_ROOT"
+}
+
+# Function to destroy bootstrap resources (OIDC + S3 backend)
 destroy_bootstrap_resources() {
-    warning "This will destroy the Terraform state backend (S3 bucket with .tflock files)!"
+    warning "This will destroy bootstrap identity resources and the Terraform state backend!"
+    warning "Bootstrap identity resources include the shared GitHub OIDC provider."
     warning "Make sure all environments are destroyed first, or you'll lose state!"
     echo ""
 
@@ -181,6 +202,11 @@ destroy_bootstrap_resources() {
     # Verify AWS credentials
     if ! aws sts get-caller-identity > /dev/null 2>&1; then
         error "AWS credentials not configured. Please configure AWS CLI or use Granted (assume)."
+        return 1
+    fi
+
+    if ! destroy_bootstrap_identity_resources; then
+        warning "Skipping backend deletion because bootstrap identity cleanup was cancelled or failed."
         return 1
     fi
 
@@ -234,7 +260,7 @@ destroy_bootstrap_resources() {
         success "Removed backend configuration file"
     fi
 
-    success "Bootstrap resources cleanup completed"
+    success "Bootstrap resources cleanup completed (identity + backend)"
 }
 
 # Function to clean local files
@@ -273,6 +299,21 @@ clean_local() {
 
     # Clean root level files
     cd "$REPO_ROOT"
+    if [[ -d bootstrap/account/.terraform ]]; then
+        rm -rf bootstrap/account/.terraform
+        info "Removed bootstrap/account/.terraform directory"
+    fi
+
+    if [[ -f bootstrap/account/.terraform.lock.hcl ]]; then
+        rm -f bootstrap/account/.terraform.lock.hcl
+        info "Removed bootstrap/account/.terraform.lock.hcl"
+    fi
+
+    if [[ -f bootstrap/account/tfplan ]]; then
+        rm -f bootstrap/account/tfplan
+        info "Removed bootstrap/account/tfplan"
+    fi
+
     if [[ -f .terraform-backend.conf ]]; then
         rm -f .terraform-backend.conf
         info "Removed .terraform-backend.conf"
@@ -287,7 +328,7 @@ clean_local() {
 
 # Function to remove environment and workflow source files
 remove_source_files() {
-    warning "This will DELETE all environment directories and workflow files!"
+    warning "This will DELETE environment directories, bootstrap stack files, and workflow files!"
     warning "These are source files that may be committed to Git."
     echo ""
 
@@ -320,13 +361,25 @@ remove_source_files() {
         done
     fi
 
-    if [[ $env_count -eq 0 && $workflow_count -eq 0 ]]; then
+    local bootstrap_count=0
+    if [[ -d "$REPO_ROOT/bootstrap/account" ]]; then
+        echo "  - bootstrap/account/"
+        bootstrap_count=1
+    fi
+
+    local mapping_count=0
+    if [[ -f "$REPO_ROOT/config/environments.json" ]]; then
+        echo "  - config/environments.json"
+        mapping_count=1
+    fi
+
+    if [[ $env_count -eq 0 && $workflow_count -eq 0 && $bootstrap_count -eq 0 && $mapping_count -eq 0 ]]; then
         info "No source files to remove"
         return 0
     fi
 
     echo ""
-    warning "Total: $env_count environment(s) and $workflow_count workflow(s)"
+    warning "Total: $env_count environment(s), $workflow_count workflow(s), $bootstrap_count bootstrap stack(s), $mapping_count mapping file(s)"
     echo ""
     read -r -p "Are you absolutely sure you want to delete these source files? (yes/N): " CONFIRM
 
@@ -370,6 +423,26 @@ remove_source_files() {
         done
     fi
 
+    if [[ $bootstrap_count -gt 0 ]]; then
+        rm -rf "$REPO_ROOT/bootstrap/account"
+        success "Removed bootstrap/account/"
+    fi
+
+    if [[ -d "$REPO_ROOT/bootstrap" ]] && [[ -z "$(ls -A "$REPO_ROOT/bootstrap" 2>/dev/null)" ]]; then
+        rmdir "$REPO_ROOT/bootstrap"
+        success "Removed empty bootstrap/ directory"
+    fi
+
+    if [[ $mapping_count -gt 0 ]]; then
+        rm -f "$REPO_ROOT/config/environments.json"
+        success "Removed config/environments.json"
+    fi
+
+    if [[ -d "$REPO_ROOT/config" ]] && [[ -z "$(ls -A "$REPO_ROOT/config" 2>/dev/null)" ]]; then
+        rmdir "$REPO_ROOT/config"
+        success "Removed empty config/ directory"
+    fi
+
     success "Source files removed"
 }
 
@@ -377,10 +450,10 @@ remove_source_files() {
 main() {
     info "Select cleanup option:"
     echo ""
-    echo "  1. Destroy all environment resources (OIDC providers, IAM roles, etc.)"
-    echo "  2. Destroy bootstrap resources (S3 bucket with state and lock files)"
+    echo "  1. Destroy all environment resources (IAM roles, app resources, etc.)"
+    echo "  2. Destroy bootstrap resources (shared OIDC + S3 backend)"
     echo "  3. Clean local files only (cached Terraform files)"
-    echo "  4. Remove source files (environment directories + workflow files)"
+    echo "  4. Remove source files (environments + bootstrap + workflow + mapping)"
     echo "  5. Full cleanup (resources + bootstrap + local + source files)"
     echo "  6. Cancel"
     echo ""

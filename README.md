@@ -13,11 +13,13 @@ A production-ready AWS Terraform starter kit featuring secure OIDC authenticatio
 
 - **⚡ One-Command Bootstrap**: Single command automatically sets up your entire infrastructure pipeline
   - Creates S3 bucket with native state locking (Terraform 1.10+)
+  - Creates account bootstrap stack for shared OIDC resources
   - Generates environment-specific Terraform configurations
-  - Provisions OIDC provider for secure keyless authentication
+  - Stores explicit environment-to-account mapping in `config/environments.json`
+  - Provisions environment IAM roles that consume bootstrap OIDC
   - Auto-generates GitHub Actions workflows for CI/CD
 - **💬 PR Plan Comments**: [Terraform plan outputs](https://github.com/marketplace/actions/terraform-plan-pr-commenter) are automatically posted to your pull requests for easy infrastructure change reviews
-- **🛡️ Built-in Security**: TFLint and Checkov are integrated in the pipeline to catch issues before you deploy to AWS
+- **🛡️ Built-in Security**: TFLint and Checkov are integrated in the pipeline and configured fail-closed for deployments
 
 <!-- TIP-LIST:START -->
 > [!TIP]
@@ -53,7 +55,7 @@ A production-ready AWS Terraform starter kit featuring secure OIDC authenticatio
 - AWS account with admin access
 - GitHub account with repository admin access
 
-**That's it!** All other tools (Terraform, AWS CLI, TFLint, Checkov) can be installed automatically with `make install-tools`.
+**That's it!** All other tools (Terraform, AWS CLI, jq, TFLint, Checkov) can be installed automatically with `make install-tools`.
 
 ## 🔧 Quick Start
 
@@ -70,7 +72,7 @@ A production-ready AWS Terraform starter kit featuring secure OIDC authenticatio
 - Compliance requirements (SOC2, ISO 27001, etc.)
 - Cost separation and tracking
 
-### Setup (3 Steps - 5 minutes)
+### Setup (4 Steps - 5 minutes)
 
 #### 1. Copy the starter kit
 
@@ -105,9 +107,10 @@ make setup
 **What happens:**
 1. ✅ Verifies prerequisites e.g. dev tools
 2. ✅ Creates S3 backend with native state locking (no DynamoDB needed)
-3. ✅ Provisions environment (test/staging/production)
-4. ✅ Deploys OIDC provider + IAM role so you can deploy securely via GitHub
-5. ✅ Generates GitHub workflow files
+3. ✅ Creates account bootstrap stack (`bootstrap/account`) for shared OIDC provider lifecycle
+4. ✅ Provisions environment stack (test/staging/production) with IAM role + Terraform config
+5. ✅ Writes/updates explicit account mapping in `config/environments.json`
+6. ✅ Generates GitHub workflow files with account guardrails
 
 **Multi-Account Setup:**
 ```bash
@@ -126,12 +129,25 @@ make setup  # Select: production
 
 ### Configure GitHub (2 minutes)
 
-#### A. Repository Variables (Optional)
+#### A. Environment Mapping (Required)
 
-All values are embedded as defaults - only set if you want to override:
-- `AWS_ACCOUNT_ID` (already hardcoded)
-- `AWS_REGION`
-- `TF_STATE_BUCKET`
+Setup stores environment mappings in `config/environments.json`.  
+Commit this file so account/region/state/role mappings are explicit and reviewed.
+
+Example:
+
+```json
+{
+  "environments": {
+    "test": {
+      "account_id": "111111111111",
+      "region": "us-east-1",
+      "state_bucket": "terraform-state-111111111111-us-east-1",
+      "role_name": "GitHubActionsServiceRole-Terraform"
+    }
+  }
+}
+```
 
 #### B. Environment Protection (Production)
 
@@ -150,6 +166,7 @@ git push origin test-deployment
 
 ✅ GitHub Actions runs automatically
 ✅ TFLint + Checkov scan
+✅ Security scans fail closed before deploy
 ✅ Terraform plan posted to PR
 ✅ Merge to deploy
 
