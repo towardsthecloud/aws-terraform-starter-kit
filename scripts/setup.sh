@@ -164,17 +164,21 @@ upsert_environment_config() {
     local tmp_file
 
     tmp_file=$(mktemp)
-    jq --arg env "$env_name" \
-       --arg account_id "$account_id" \
-       --arg region "$region" \
-       --arg state_bucket "$state_bucket" \
-       --arg role_name "$role_name" \
-       '.environments[$env] = {
+    if ! jq --arg env "$env_name" \
+        --arg account_id "$account_id" \
+        --arg region "$region" \
+        --arg state_bucket "$state_bucket" \
+        --arg role_name "$role_name" \
+        '.environments[$env] = {
           account_id: $account_id,
           region: $region,
           state_bucket: $state_bucket,
           role_name: $role_name
-        }' "$ENV_CONFIG_FILE" > "$tmp_file"
+        }' "$ENV_CONFIG_FILE" > "$tmp_file"; then
+        rm -f "$tmp_file"
+        error "Failed to update environment mapping file: $ENV_CONFIG_FILE"
+    fi
+
     mv "$tmp_file" "$ENV_CONFIG_FILE"
 }
 
@@ -554,6 +558,23 @@ info "Using environment mapping file: $ENV_CONFIG_FILE"
 # Create account-level bootstrap stack for shared identity resources
 provision_bootstrap_identity_stack() {
     local BOOTSTRAP_DIR="$REPO_ROOT/bootstrap/account"
+    local EXISTING_OIDC_PROVIDER_ARN
+    local BOOTSTRAP_USE_EXISTING_OIDC=false
+
+    EXISTING_OIDC_PROVIDER_ARN=$(
+        aws iam list-open-id-connect-providers --output json 2>/dev/null | \
+            jq -r '.OpenIDConnectProviderList[]?.Arn | select(test("oidc-provider/token.actions.githubusercontent.com$"))' | \
+            head -n1
+    )
+
+    if [[ -n "$EXISTING_OIDC_PROVIDER_ARN" ]]; then
+        BOOTSTRAP_USE_EXISTING_OIDC=true
+        info "Detected existing GitHub OIDC provider: $EXISTING_OIDC_PROVIDER_ARN"
+        info "Bootstrap stack will reuse existing provider."
+    else
+        info "No existing GitHub OIDC provider detected."
+        info "Bootstrap stack will create the provider."
+    fi
 
     info "Creating account bootstrap stack: $BOOTSTRAP_DIR"
     mkdir -p "$BOOTSTRAP_DIR"
@@ -593,6 +614,7 @@ provider "aws" {
 }
 
 resource "aws_iam_openid_connect_provider" "github_actions" {
+  count           = var.use_existing_oidc_provider ? 0 : 1
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = var.audience_list
   thumbprint_list = [var.github_thumbprint]
@@ -601,6 +623,15 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
     Name       = "GitHubActionsOIDCProvider"
     Repository = var.github_repo
   }
+}
+
+data "aws_iam_openid_connect_provider" "github_actions" {
+  count = var.use_existing_oidc_provider ? 1 : 0
+  url   = "https://token.actions.githubusercontent.com"
+}
+
+locals {
+  oidc_provider_arn = var.use_existing_oidc_provider ? data.aws_iam_openid_connect_provider.github_actions[0].arn : aws_iam_openid_connect_provider.github_actions[0].arn
 }
 EOF
 
@@ -628,18 +659,25 @@ variable "audience_list" {
   type        = list(string)
   default     = ["sts.amazonaws.com"]
 }
+
+variable "use_existing_oidc_provider" {
+  description = "Whether to use an existing OIDC provider instead of creating one"
+  type        = bool
+  default     = false
+}
 EOF
 
     cat > "$BOOTSTRAP_DIR/outputs.tf" << EOF
 output "oidc_provider_arn" {
   description = "ARN of the GitHub OIDC provider"
-  value       = aws_iam_openid_connect_provider.github_actions.arn
+  value       = local.oidc_provider_arn
 }
 EOF
 
     cat > "$BOOTSTRAP_DIR/terraform.tfvars" << EOF
-aws_region  = "${DETECTED_REGION}"
-github_repo = "${GITHUB_REPO}"
+aws_region                 = "${DETECTED_REGION}"
+github_repo                = "${GITHUB_REPO}"
+use_existing_oidc_provider = ${BOOTSTRAP_USE_EXISTING_OIDC}
 EOF
 
     success "Created account bootstrap stack files"

@@ -13,7 +13,7 @@ A production-ready AWS Terraform starter kit featuring secure OIDC authenticatio
 
 - **⚡ One-Command Bootstrap**: Single command automatically sets up your entire infrastructure pipeline
   - Creates S3 bucket with native state locking (Terraform 1.10+)
-  - Creates account bootstrap stack for shared OIDC resources
+  - Creates account bootstrap stack for shared OIDC resources (reuses existing provider if present)
   - Generates environment-specific Terraform configurations
   - Stores explicit environment-to-account mapping in `config/environments.json`
   - Provisions environment IAM roles that consume bootstrap OIDC
