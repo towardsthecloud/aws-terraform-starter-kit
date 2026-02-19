@@ -7,7 +7,7 @@ help:
 	@echo "════════════════════════════════════════════════════════════"
 	@echo ""
 	@echo "Setup Commands:"
-	@echo "  setup         - Complete setup wizard (bootstrap + provision + OIDC)"
+	@echo "  setup         - Complete setup wizard (bootstrap + provision + deploy)"
 	@echo "  install-tools - Install required development tools"
 	@echo ""
 	@echo "Validation Commands:"
@@ -90,6 +90,31 @@ install-tools:
 				rm -rf aws awscliv2.zip; ;; \
 			*) \
 				echo "❌ Unsupported OS. Please install manually."; ;; \
+		esac; \
+	fi; \
+	echo ""; \
+	\
+	echo "📦 Installing jq..."; \
+	if command -v jq >/dev/null 2>&1; then \
+		echo "✅ jq already installed: $$(jq --version)"; \
+	else \
+		case "$$OS" in \
+			Darwin*) \
+				if command -v brew >/dev/null 2>&1; then \
+					brew install jq; \
+				else \
+					echo "❌ Homebrew not found. Please install jq manually."; \
+				fi ;; \
+			Linux*) \
+				if command -v apt-get >/dev/null 2>&1; then \
+					sudo apt-get update && sudo apt-get install -y jq; \
+				elif command -v yum >/dev/null 2>&1; then \
+					sudo yum install -y jq; \
+				else \
+					echo "❌ No supported package manager found. Please install jq manually."; \
+				fi ;; \
+			*) \
+				echo "❌ Unsupported OS. Please install jq manually."; ;; \
 		esac; \
 	fi; \
 	echo ""; \
@@ -350,6 +375,9 @@ check:
 	@echo ""
 	@echo "AWS CLI:"
 	@if command -v aws >/dev/null 2>&1; then aws --version; else echo "❌ AWS CLI not installed"; fi
+	@echo ""
+	@echo "jq:"
+	@if command -v jq >/dev/null 2>&1; then jq --version; else echo "❌ jq not installed"; fi
 	@echo ""
 	@echo "TFLint:"
 	@if command -v tflint >/dev/null 2>&1; then tflint --version; else echo "⚠️  TFLint not installed (optional)"; fi
