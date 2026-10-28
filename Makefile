@@ -124,7 +124,8 @@ install-tools: ## Install Terraform, AWS CLI, jq, TFLint, Checkov, and Granted
 				curl -sSLO https://github.com/terraform-linters/tflint/releases/latest/download/checksums.txt && \
 				sha256sum --ignore-missing -c checksums.txt && \
 				unzip -q "tflint_linux_$$ARCH.zip" && \
-				sudo install -c tflint /usr/local/bin/); \
+				sudo install -c tflint /usr/local/bin/) || \
+				echo "❌ TFLint installation failed. Please install from https://github.com/terraform-linters/tflint#installation"; \
 				rm -rf "$$TMP_DIR"; ;; \
 			*) \
 				echo "❌ Unsupported OS. Please install manually."; ;; \
@@ -199,7 +200,8 @@ fmt-check: ## Check that all Terraform files are formatted
 	@terraform fmt -check -recursive || { echo "❌ Some files need formatting. Run: make format" >&2; exit 1; }
 
 validate: ## Validate every environment without touching remote state
-	@failed=0; \
+	@$(if $(ENVIRONMENTS),,echo "⚠️  No environments to validate yet. Run: make setup";) \
+	failed=0; \
 	for env in $(ENVIRONMENTS); do \
 		echo "🔍 Validating $$env"; \
 		(cd environments/$$env && terraform init -backend=false -input=false >/dev/null && terraform validate) || failed=1; \
